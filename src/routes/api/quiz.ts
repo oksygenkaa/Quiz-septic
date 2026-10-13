@@ -9,7 +9,7 @@ import { createFileRoute } from "@tanstack/react-router";
  * в коде и в репозитории его быть не должно.
  * ========================================================================== */
 
-const AMO_SUBDOMAIN = process.env.AMO_SUBDOMAIN || "amelinameliorama";
+const AMO_SUBDOMAIN = process.env["AMO_SUBDOMAIN"] || "amelinameliorama";
 const PIPELINE_ID = 11340862; // воронка «Воронка»
 const STATUS_ID = 88887066; // этап «поступила заявка»
 
@@ -60,7 +60,7 @@ export const Route = createFileRoute("/api/quiz")({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        const token = process.env.AMO_TOKEN;
+        const token = process.env["AMO_TOKEN"];
         if (!token) {
           console.error("[quiz] AMO_TOKEN не задан в окружении сервера");
           return json({ ok: false, error: "server_not_configured" }, 500);
@@ -77,30 +77,30 @@ export const Route = createFileRoute("/api/quiz")({
           return json({ ok: false, error: "bad_json" }, 400);
         }
 
-        const name = str(data.name, 200);
-        const phoneRaw = str(data.phone, 50);
+        const name = str(data["name"], 200);
+        const phoneRaw = str(data["phone"], 50);
         if (!name || phoneRaw.replace(/\D/g, "").length < 10) {
           return json({ ok: false, error: "name_or_phone_missing" }, 400);
         }
         const phone = normalizePhone(phoneRaw);
 
-        const parsedDate = Date.parse(str(data.timestamp, 50));
+        const parsedDate = Date.parse(str(data["timestamp"], 50));
         const unixTime = Math.floor(
           (Number.isNaN(parsedDate) ? Date.now() : parsedDate) / 1000,
         );
 
         const customFields = [
           { field_id: FIELD.date, values: [{ value: unixTime }] } as CustomField,
-          textField(FIELD.people, str(data.answer_1)),
-          textField(FIELD.living, str(data.answer_2)),
-          textField(FIELD.groundwater, str(data.answer_3)),
-          textField(FIELD.contact, str(data.answer_4)),
-          textField(FIELD.utm_source, str(data.utm_source)),
-          textField(FIELD.utm_medium, str(data.utm_medium)),
-          textField(FIELD.utm_campaign, str(data.utm_campaign)),
-          textField(FIELD.utm_content, str(data.utm_content)),
-          textField(FIELD.utm_term, str(data.utm_term)),
-          textField(FIELD.page_url, str(data.page_url, 1000), 1000),
+          textField(FIELD.people, str(data["answer_1"])),
+          textField(FIELD.living, str(data["answer_2"])),
+          textField(FIELD.groundwater, str(data["answer_3"])),
+          textField(FIELD.contact, str(data["answer_4"])),
+          textField(FIELD.utm_source, str(data["utm_source"])),
+          textField(FIELD.utm_medium, str(data["utm_medium"])),
+          textField(FIELD.utm_campaign, str(data["utm_campaign"])),
+          textField(FIELD.utm_content, str(data["utm_content"])),
+          textField(FIELD.utm_term, str(data["utm_term"])),
+          textField(FIELD.page_url, str(data["page_url"], 1000), 1000),
         ].filter((f): f is CustomField => f !== null);
 
         // Один запрос создаёт и сделку, и контакт, и связывает их
