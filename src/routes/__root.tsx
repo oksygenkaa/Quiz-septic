@@ -3,6 +3,7 @@ import {
   Outlet,
   Link,
   createRootRouteWithContext,
+  type ErrorRouteComponent,
   useRouter,
   HeadContent,
   Scripts,
