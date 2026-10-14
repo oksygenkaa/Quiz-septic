@@ -1,158 +1,68 @@
-import { createFileRoute } from "@tanstack/react-router";
-
 /* =============================================================================
- * Обработчик /api/quiz: принимает заявку из квиза и создаёт в amoCRM
- * контакт (имя, телефон) и сделку (ответы квиза, utm-метки) на этапе
- * «поступила заявка».
+ * Резервное хранение заявок на сервере (дополнение к Google Таблице, Telegram
+ * и amoCRM, ничего из них не заменяет).
  *
- * Токен берётся из переменной окружения AMO_TOKEN (файл .env на сервере),
- * в коде и в репозитории его быть не должно.
+ * Формат: один файл leads.jsonl, одна строка JSON = одно событие.
+ *   - строка "lead"     — сама заявка (пишется ПЕРВОЙ, до отправки в amoCRM);
+ *   - строка "delivery" — результат отправки заявки в канал (amo и т.д.).
+ * Файл только дописывается, старые строки не меняются — так заявку невозможно
+ * потерять при сбое или перезапуске.
+ *
+ * Папка задаётся переменной LEADS_DIR (по умолчанию ./data рядом с проектом).
+ * ВАЖНО: на сервере укажите папку ВНЕ каталога проекта, чтобы деплой её не
+ * затёр, например LEADS_DIR=/var/lib/quiz-data
+ *
+ * Функции никогда не бросают исключений: сбой хранилища не должен ломать
+ * отправку заявки в остальные каналы.
  * ========================================================================== */
 
-const AMO_SUBDOMAIN = process.env["AMO_SUBDOMAIN"] || "amelinameliorama";
-const PIPELINE_ID = 11340862; // воронка «Воронка»
-const STATUS_ID = 88887066; // этап «поступила заявка»
+export type LeadPayload = Record<string, unknown>;
 
-// ID полей сделки в amoCRM
-const FIELD = {
-  date: 418893, // Дата заявки (дата и время)
-  people: 418895, // Кол-во человек
-  living: 418897, // Проживание
-  groundwater: 418899, // Грунтовые воды
-  contact: 418901, // Способ связи
-  utm_source: 418903,
-  utm_medium: 418907,
-  utm_campaign: 418909,
-  utm_content: 418911,
-  utm_term: 418913,
-  page_url: 418915, // URL страницы
-} as const;
-
-type Payload = Record<string, unknown>;
-
-const str = (v: unknown, max = 500): string =>
-  typeof v === "string" ? v.trim().slice(0, max) : "";
-
-// Телефон приводим к виду +7XXXXXXXXXX
-function normalizePhone(raw: string): string {
-  let digits = raw.replace(/\D/g, "");
-  if (digits.startsWith("8")) digits = "7" + digits.slice(1);
-  if (!digits.startsWith("7")) digits = "7" + digits;
-  return "+" + digits.slice(0, 11);
+async function appendLine(record: Record<string, unknown>): Promise<boolean> {
+  try {
+    const { appendFile, mkdir } = await import("node:fs/promises");
+    const path = await import("node:path");
+    const dir = process.env["LEADS_DIR"] || path.resolve(process.cwd(), "data");
+    await mkdir(dir, { recursive: true });
+    await appendFile(path.join(dir, "leads.jsonl"), JSON.stringify(record) + "\n", {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    return true;
+  } catch (error) {
+    console.error("[quiz] не удалось записать заявку в локальное хранилище", error);
+    return false;
+  }
 }
 
-type CustomField = { field_id: number; values: { value: string | number }[] };
-
-// Пустые значения в amoCRM не отправляем: он отвечает на них ошибкой
-function textField(id: number, value: string, max = 500): CustomField | null {
-  const v = str(value, max);
-  return v ? { field_id: id, values: [{ value: v }] } : null;
+/** Сохраняет заявку. Возвращает id заявки (или null, если запись не удалась). */
+export async function saveLead(payload: LeadPayload, meta: { ip?: string } = {}) {
+  const { randomUUID } = await import("node:crypto");
+  const id = randomUUID();
+  const ok = await appendLine({
+    type: "lead",
+    id,
+    received_at: new Date().toISOString(),
+    ip: meta.ip ?? "",
+    payload,
+  });
+  return ok ? id : null;
 }
 
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
+/** Записывает результат доставки заявки в канал (amo, telegram, sheet...). */
+export async function markDelivery(
+  id: string | null,
+  channel: string,
+  ok: boolean,
+  detail = "",
+) {
+  if (!id) return;
+  await appendLine({
+    type: "delivery",
+    id,
+    channel,
+    ok,
+    detail: detail.slice(0, 500),
+    at: new Date().toISOString(),
   });
 }
-
-export const Route = createFileRoute("/api/quiz")({
-  server: {
-    handlers: {
-      POST: async ({ request }) => {
-        const token = process.env["AMO_TOKEN"];
-        if (!token) {
-          console.error("[quiz] AMO_TOKEN не задан в окружении сервера");
-          return json({ ok: false, error: "server_not_configured" }, 500);
-        }
-
-        // Защита от слишком больших запросов
-        const length = Number(request.headers.get("content-length") || 0);
-        if (length > 20_000) return json({ ok: false, error: "too_large" }, 413);
-
-        let data: Payload;
-        try {
-          data = (await request.json()) as Payload;
-        } catch {
-          return json({ ok: false, error: "bad_json" }, 400);
-        }
-
-        const name = str(data["name"], 200);
-        const phoneRaw = str(data["phone"], 50);
-        if (!name || phoneRaw.replace(/\D/g, "").length < 10) {
-          return json({ ok: false, error: "name_or_phone_missing" }, 400);
-        }
-        const phone = normalizePhone(phoneRaw);
-
-        const parsedDate = Date.parse(str(data["timestamp"], 50));
-        const unixTime = Math.floor(
-          (Number.isNaN(parsedDate) ? Date.now() : parsedDate) / 1000,
-        );
-
-        const customFields = [
-          { field_id: FIELD.date, values: [{ value: unixTime }] } as CustomField,
-          textField(FIELD.people, str(data["answer_1"])),
-          textField(FIELD.living, str(data["answer_2"])),
-          textField(FIELD.groundwater, str(data["answer_3"])),
-          textField(FIELD.contact, str(data["answer_4"])),
-          textField(FIELD.utm_source, str(data["utm_source"])),
-          textField(FIELD.utm_medium, str(data["utm_medium"])),
-          textField(FIELD.utm_campaign, str(data["utm_campaign"])),
-          textField(FIELD.utm_content, str(data["utm_content"])),
-          textField(FIELD.utm_term, str(data["utm_term"])),
-          textField(FIELD.page_url, str(data["page_url"], 1000), 1000),
-        ].filter((f): f is CustomField => f !== null);
-
-        // Один запрос создаёт и сделку, и контакт, и связывает их
-        const body = [
-          {
-            name: `Заявка с квиза: ${name}`,
-            pipeline_id: PIPELINE_ID,
-            status_id: STATUS_ID,
-            custom_fields_values: customFields,
-            _embedded: {
-              contacts: [
-                {
-                  name,
-                  custom_fields_values: [
-                    {
-                      field_code: "PHONE",
-                      values: [{ value: phone, enum_code: "WORK" }],
-                    },
-                  ],
-                },
-              ],
-            },
-          },
-        ];
-
-        try {
-          const res = await fetch(
-            `https://${AMO_SUBDOMAIN}.amocrm.ru/api/v4/leads/complex`,
-            {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${token}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify(body),
-              signal: AbortSignal.timeout(10_000),
-            },
-          );
-
-          if (!res.ok) {
-            // В лог пишем статус и ответ amoCRM, токен не выводим
-            const text = await res.text();
-            console.error("[quiz] amoCRM ответил ошибкой", res.status, text.slice(0, 1000));
-            return json({ ok: false, error: "amo_error", status: res.status }, 502);
-          }
-
-          return json({ ok: true });
-        } catch (error) {
-          console.error("[quiz] не удалось обратиться к amoCRM", error);
-          return json({ ok: false, error: "amo_unreachable" }, 502);
-        }
-      },
-    },
-  },
-});
