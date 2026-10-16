@@ -178,6 +178,7 @@ function QuizPage() {
   const [phone, setPhone] = useState("");
   const [agreed, setAgreed] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState(false);
   const [done, setDone] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [submittedPhone, setSubmittedPhone] = useState("");
@@ -271,6 +272,7 @@ function QuizPage() {
   const handleSubmit = useCallback(async () => {
     if (isSubmitting || !canSubmit) return;
     setIsSubmitting(true);
+    setSubmitError(false);
     const payload = {
       timestamp: new Date().toISOString(),
       answer_1: answers[0] ?? "",
@@ -283,33 +285,43 @@ function QuizPage() {
       page_url: window.location.href,
     };
 
+    // Заявка отправляется в два места одновременно, причём запрос на наш сервер
+    // стартует первым: сервер сохраняет заявку у себя и передаёт её в amoCRM.
+    // Параллельно заявка уходит в Google Таблицу (и Telegram).
+    // Сбой одного канала не мешает другому.
+    const serverRequest = fetch(AMO_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).then((res) => res.ok);
+
+    let googleRequest: Promise<boolean>;
     if (GOOGLE_SCRIPT_URL.startsWith("http")) {
-      try {
-        await fetch(GOOGLE_SCRIPT_URL, {
-          method: "POST",
-          mode: "no-cors",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams(payload).toString(),
-        });
-      } catch (error) {
-        console.error("Ошибка отправки заявки", error);
-        setIsSubmitting(false);
-        return;
-      }
+      googleRequest = fetch(GOOGLE_SCRIPT_URL, {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams(payload).toString(),
+      }).then(() => true);
     } else {
       console.log("Данные заявки (URL Apps Script не задан):", payload);
+      googleRequest = Promise.resolve(true);
     }
 
-    // Отправка на наш сервер (дальше сервер передаёт заявку в amoCRM).
-    // Ошибка здесь не мешает пользователю: заявка уже ушла в таблицу.
-    try {
-      await fetch(AMO_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-    } catch (error) {
-      console.error("Ошибка отправки на сервер (amoCRM)", error);
+    const [serverResult, googleResult] = await Promise.allSettled([
+      serverRequest,
+      googleRequest,
+    ]);
+    const serverOk = serverResult.status === "fulfilled" && serverResult.value;
+    const googleOk = googleResult.status === "fulfilled" && googleResult.value;
+    if (!serverOk) console.error("Ошибка отправки на сервер (amoCRM)", serverResult);
+    if (!googleOk) console.error("Ошибка отправки в Google Таблицу", googleResult);
+
+    // Если не сработал ни один канал, показываем сообщение и даём отправить ещё раз
+    if (!serverOk && !googleOk) {
+      setSubmitError(true);
+      setIsSubmitting(false);
+      return;
     }
 
     setSubmittedPhone(phone);
@@ -455,6 +467,14 @@ function QuizPage() {
                 данных
               </span>
             </label>
+            {submitError && (
+              <p
+                role="alert"
+                className="rounded-xl bg-red-50 px-3 py-2 text-sm leading-snug text-red-600"
+              >
+                Не удалось отправить заявку. Проверьте интернет и нажмите кнопку ещё раз.
+              </p>
+            )}
             <button
               type="button"
               onClick={handleSubmit}

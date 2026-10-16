@@ -1,543 +1,158 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState } from "react";
 
 /* =============================================================================
- * Квиз-лендинг «Свежий ветер» — имитация переписки в мессенджере.
+ * Обработчик /api/quiz: принимает заявку из квиза и создаёт в amoCRM
+ * контакт (имя, телефон) и сделку (ответы квиза, utm-метки) на этапе
+ * «поступила заявка».
  *
- * ---------------------------------------------------------------------------
- * ШАБЛОН Google Apps Script (Code.gs)
- * Вставьте в таблицу: Расширения → Apps Script, затем Deploy → New deployment
- * → Web app → Execute as: Me, Who has access: Anyone. Полученный URL
- * подставьте в константу GOOGLE_SCRIPT_URL ниже.
- *
- * function doPost(e) {
- *   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0];
- *   var p = e.parameter || {};
- *   if (sheet.getLastRow() === 0) {
- *     sheet.appendRow([
- *       'timestamp','answer_1','answer_2','answer_3','answer_4','name','phone',
- *       'utm_source','utm_medium','utm_campaign','utm_content','utm_term','page_url'
- *     ]);
- *   }
- *   sheet.appendRow([
- *     p.timestamp || new Date(),
- *     p.answer_1 || '', p.answer_2 || '', p.answer_3 || '', p.answer_4 || '',
- *     p.name || '', p.phone || '',
- *     p.utm_source || '', p.utm_medium || '', p.utm_campaign || '',
- *     p.utm_content || '', p.utm_term || '', p.page_url || ''
- *   ]);
- *   return ContentService.createTextOutput('OK');
- * }
- * ---------------------------------------------------------------------------
- */
+ * Токен берётся из переменной окружения AMO_TOKEN (файл .env на сервере),
+ * в коде и в репозитории его быть не должно.
+ * ========================================================================== */
 
-const GOOGLE_SCRIPT_URL =
-  "https://script.google.com/macros/s/AKfycbyG2bYMAt1GzbWUQzzCHeUhUkz3do7S0jIXCv65nZ3XpchtiZMVi3t5pIJYo_6ZJCy3PA/exec";
-const CALL_MARKING = "IP Nikitina IV: stroit-vo";
-// Адрес обработчика на нашем сервере, который передаёт заявку в amoCRM
-const AMO_ENDPOINT = "/api/quiz";
+const AMO_SUBDOMAIN = process.env["AMO_SUBDOMAIN"] || "amelinameliorama";
+const PIPELINE_ID = 11340862; // воронка «Воронка»
+const STATUS_ID = 88887066; // этап «поступила заявка»
 
-const UTM_KEYS = [
-  "utm_source",
-  "utm_medium",
-  "utm_campaign",
-  "utm_content",
-  "utm_term",
-] as const;
+// ID полей сделки в amoCRM
+const FIELD = {
+  date: 418893, // Дата заявки (дата и время)
+  people: 418895, // Кол-во человек
+  living: 418897, // Проживание
+  groundwater: 418899, // Грунтовые воды
+  contact: 418901, // Способ связи
+  utm_source: 418903,
+  utm_medium: 418907,
+  utm_campaign: 418909,
+  utm_content: 418911,
+  utm_term: 418913,
+  page_url: 418915, // URL страницы
+} as const;
 
-type UtmKey = (typeof UTM_KEYS)[number];
-type Utm = Record<UtmKey, string>;
+type Payload = Record<string, unknown>;
 
-const EMPTY_UTM: Utm = {
-  utm_source: "",
-  utm_medium: "",
-  utm_campaign: "",
-  utm_content: "",
-  utm_term: "",
-};
+const str = (v: unknown, max = 500): string =>
+  typeof v === "string" ? v.trim().slice(0, max) : "";
 
-type Step = {
-  messages: string[];
-  options: string[];
-};
-
-const STEPS: Step[] = [
-  {
-    messages: [
-      "Здравствуйте! Я Степан, менеджер компании «Свежий ветер».",
-      "Подберём оптимальный септик под ваш дом и бюджет — а не тот, что выгоднее продать. Цены от производителя — от 55 000 рублей. Гарантия до 50 лет и оплата по факту.",
-      "Ответьте на 3 коротких вопроса — подготовлю расчёт для вас.",
-      "1. Сколько человек проживает или будет проживать в доме?",
-    ],
-    options: ["От 1 до 3 человек", "4–6 человек", "7–11 человек", "Больше 12 человек"],
-  },
-  {
-    messages: ["2. Как планируете проживать на объекте?"],
-    options: ["Сезонно", "Постоянно", "Коммерческий объект"],
-  },
-  {
-    messages: ["3. Укажите уровень грунтовых вод на Вашем участке?"],
-    options: ["Низкий, Ниже 1.5 метра", "Высокий, Выше 1.5 метра", "Не знаю"],
-  },
-  {
-    messages: ["4. Как Вам удобнее получить подборку септика?"],
-    options: ["По телефону", "Telegram", "MAX", "WhatsApp"],
-  },
-  {
-    messages: [
-      "Спасибо! Расчёт практически готов. Оставьте номер телефона, мы уточним несколько вопросов и рассчитаем стоимость под ключ.",
-      "Осень — подходящее время для установки септика: основной сезон заканчивается, участок меньше используется, а монтаж можно провести до промерзания грунта и подготовить канализацию к следующему сезону.",
-      "Укажите Ваше имя и номер телефона для связи выбранным способом.",
-    ],
-    options: [],
-  },
-];
-
-const TOTAL_STEPS = STEPS.length;
-
-type ChatItem = { id: number; from: "manager" | "user"; text: string };
-
-function formatPhone(raw: string): string {
+// Телефон приводим к виду +7XXXXXXXXXX
+function normalizePhone(raw: string): string {
   let digits = raw.replace(/\D/g, "");
   if (digits.startsWith("8")) digits = "7" + digits.slice(1);
   if (!digits.startsWith("7")) digits = "7" + digits;
-  digits = digits.slice(0, 11);
-  const rest = digits.slice(1);
-  let out = "+7";
-  if (rest.length > 0) out += ` (${rest.slice(0, 3)}`;
-  if (rest.length >= 3) out += ")";
-  if (rest.length > 3) out += ` ${rest.slice(3, 6)}`;
-  if (rest.length > 6) out += `-${rest.slice(6, 8)}`;
-  if (rest.length > 8) out += `-${rest.slice(8, 10)}`;
-  return out;
+  return "+" + digits.slice(0, 11);
 }
 
-function phoneComplete(value: string): boolean {
-  return value.replace(/\D/g, "").length === 11;
+type CustomField = { field_id: number; values: { value: string | number }[] };
+
+// Пустые значения в amoCRM не отправляем: он отвечает на них ошибкой
+function textField(id: number, value: string, max = 500): CustomField | null {
+  const v = str(value, max);
+  return v ? { field_id: id, values: [{ value: v }] } : null;
 }
 
-export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "Свежий ветер — подбор септика за 4 вопроса" },
-      {
-        name: "description",
-        content:
-          "Ответьте на 4 коротких вопроса — подберём септик под ваш дом и бюджет. Цены от производителя от 55 000 ₽, гарантия до 50 лет, оплата по факту.",
-      },
-      { property: "og:title", content: "Свежий ветер — подбор септика за 4 вопроса" },
-      {
-        property: "og:description",
-        content:
-          "Подбор септика под ваш дом и бюджет: цены от производителя от 55 000 ₽, гарантия до 50 лет, оплата по факту.",
-      },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary_large_image" },
-    ],
-  }),
-  component: QuizPage,
-});
-
-function ManagerAvatar({ size = "sm" }: { size?: "sm" | "lg" }) {
-  return (
-    <div
-      className={`grid shrink-0 place-items-center rounded-full bg-primary font-bold text-primary-foreground ${
-        size === "lg" ? "h-11 w-11 text-lg" : "h-7 w-7 text-xs"
-      }`}
-      aria-hidden="true"
-    >
-      С
-    </div>
-  );
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
-function TypingBubble() {
-  return (
-    <div className="flex items-end gap-2">
-      <ManagerAvatar />
-      <div className="flex items-center gap-1 rounded-2xl rounded-bl-md bg-chat-bubble px-4 py-3 shadow-sm">
-        {[0, 1, 2].map((i) => (
-          <span
-            key={i}
-            className="animate-dot inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground"
-            style={{ animationDelay: `${i * 0.18}s` }}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
+export const Route = createFileRoute("/api/quiz")({
+  server: {
+    handlers: {
+      POST: async ({ request }) => {
+        const token = process.env["AMO_TOKEN"];
+        if (!token) {
+          console.error("[quiz] AMO_TOKEN не задан в окружении сервера");
+          return json({ ok: false, error: "server_not_configured" }, 500);
+        }
 
-function QuizPage() {
-  const [stepIndex, setStepIndex] = useState(0);
-  const [chat, setChat] = useState<ChatItem[]>([]);
-  const [typing, setTyping] = useState(true);
-  const [showInteraction, setShowInteraction] = useState(false);
-  const [answers, setAnswers] = useState<string[]>([]);
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
-  const [agreed, setAgreed] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState(false);
-  const [done, setDone] = useState(false);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [submittedPhone, setSubmittedPhone] = useState("");
-  const [utm, setUtm] = useState<Utm>(EMPTY_UTM);
+        // Защита от слишком больших запросов
+        const length = Number(request.headers.get("content-length") || 0);
+        if (length > 20_000) return json({ ok: false, error: "too_large" }, 413);
 
-  const idRef = useRef(0);
-  const scrollRef = useRef<HTMLDivElement>(null);
+        let data: Payload;
+        try {
+          data = (await request.json()) as Payload;
+        } catch {
+          return json({ ok: false, error: "bad_json" }, 400);
+        }
 
-  useEffect(() => {
-    const stored = sessionStorage.getItem("quiz_utm");
-    const params = new URLSearchParams(window.location.search);
-    const fromUrl = { ...EMPTY_UTM };
-    let hasAny = false;
-    for (const key of UTM_KEYS) {
-      const value = params.get(key);
-      if (value) {
-        fromUrl[key] = value;
-        hasAny = true;
-      }
-    }
-    if (hasAny) {
-      sessionStorage.setItem("quiz_utm", JSON.stringify(fromUrl));
-      setUtm(fromUrl);
-    } else if (stored) {
-      try {
-        setUtm({ ...EMPTY_UTM, ...(JSON.parse(stored) as Partial<Utm>) });
-      } catch {
-        setUtm(EMPTY_UTM);
-      }
-    }
-  }, []);
+        const name = str(data["name"], 200);
+        const phoneRaw = str(data["phone"], 50);
+        if (!name || phoneRaw.replace(/\D/g, "").length < 10) {
+          return json({ ok: false, error: "name_or_phone_missing" }, 400);
+        }
+        const phone = normalizePhone(phoneRaw);
 
-  // Последовательный «набор» сообщений менеджера для текущего шага.
-  useEffect(() => {
-    const step = STEPS[stepIndex];
-    if (!step) return;
-    let cancelled = false;
-    const timers: ReturnType<typeof setTimeout>[] = [];
-
-    const play = (i: number) => {
-      if (cancelled) return;
-      const text = step.messages[i];
-      if (text === undefined) {
-        timers.push(
-          setTimeout(() => {
-            if (!cancelled) setShowInteraction(true);
-          }, 350),
+        const parsedDate = Date.parse(str(data["timestamp"], 50));
+        const unixTime = Math.floor(
+          (Number.isNaN(parsedDate) ? Date.now() : parsedDate) / 1000,
         );
-        return;
-      }
-      setTyping(true);
-      const delay = Math.min(2000, 900 + text.length * 8);
-      timers.push(
-        setTimeout(() => {
-          if (cancelled) return;
-          idRef.current += 1;
-          setChat((prev) => [...prev, { id: idRef.current, from: "manager", text }]);
-          setTyping(false);
-          timers.push(
-            setTimeout(() => {
-              play(i + 1);
-            }, 400),
+
+        const customFields = [
+          { field_id: FIELD.date, values: [{ value: unixTime }] } as CustomField,
+          textField(FIELD.people, str(data["answer_1"])),
+          textField(FIELD.living, str(data["answer_2"])),
+          textField(FIELD.groundwater, str(data["answer_3"])),
+          textField(FIELD.contact, str(data["answer_4"])),
+          textField(FIELD.utm_source, str(data["utm_source"])),
+          textField(FIELD.utm_medium, str(data["utm_medium"])),
+          textField(FIELD.utm_campaign, str(data["utm_campaign"])),
+          textField(FIELD.utm_content, str(data["utm_content"])),
+          textField(FIELD.utm_term, str(data["utm_term"])),
+          textField(FIELD.page_url, str(data["page_url"], 1000), 1000),
+        ].filter((f): f is CustomField => f !== null);
+
+        // Один запрос создаёт и сделку, и контакт, и связывает их
+        const body = [
+          {
+            name: `Заявка с квиза: ${name}`,
+            pipeline_id: PIPELINE_ID,
+            status_id: STATUS_ID,
+            custom_fields_values: customFields,
+            _embedded: {
+              contacts: [
+                {
+                  name,
+                  custom_fields_values: [
+                    {
+                      field_code: "PHONE",
+                      values: [{ value: phone, enum_code: "WORK" }],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        ];
+
+        try {
+          const res = await fetch(
+            `https://${AMO_SUBDOMAIN}.amocrm.ru/api/v4/leads/complex`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(body),
+              signal: AbortSignal.timeout(10_000),
+            },
           );
-        }, delay),
-      );
-    };
 
-    play(0);
-    return () => {
-      cancelled = true;
-      timers.forEach(clearTimeout);
-    };
-  }, [stepIndex]);
+          if (!res.ok) {
+            // В лог пишем статус и ответ amoCRM, токен не выводим
+            const text = await res.text();
+            console.error("[quiz] amoCRM ответил ошибкой", res.status, text.slice(0, 1000));
+            return json({ ok: false, error: "amo_error", status: res.status }, 502);
+          }
 
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [chat, typing, showInteraction, done]);
-
-  const handleOption = (option: string) => {
-    idRef.current += 1;
-    setChat((prev) => [...prev, { id: idRef.current, from: "user", text: option }]);
-    setAnswers((prev) => [...prev, option]);
-    setShowInteraction(false);
-    setTyping(true);
-    setStepIndex((prev) => prev + 1);
-  };
-
-  const canSubmit = name.trim().length > 0 && phoneComplete(phone) && agreed;
-
-  const handleSubmit = useCallback(async () => {
-    if (isSubmitting || !canSubmit) return;
-    setIsSubmitting(true);
-    setSubmitError(false);
-    const payload = {
-      timestamp: new Date().toISOString(),
-      answer_1: answers[0] ?? "",
-      answer_2: answers[1] ?? "",
-      answer_3: answers[2] ?? "",
-      answer_4: answers[3] ?? "",
-      name: name.trim(),
-      phone,
-      ...utm,
-      page_url: window.location.href,
-    };
-
-    // Заявка отправляется в два места одновременно, причём запрос на наш сервер
-    // стартует первым: сервер сохраняет заявку у себя и передаёт её в amoCRM.
-    // Параллельно заявка уходит в Google Таблицу (и Telegram).
-    // Сбой одного канала не мешает другому.
-    const serverRequest = fetch(AMO_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }).then((res) => res.ok);
-
-    let googleRequest: Promise<boolean>;
-    if (GOOGLE_SCRIPT_URL.startsWith("http")) {
-      googleRequest = fetch(GOOGLE_SCRIPT_URL, {
-        method: "POST",
-        mode: "no-cors",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams(payload).toString(),
-      }).then(() => true);
-    } else {
-      console.log("Данные заявки (URL Apps Script не задан):", payload);
-      googleRequest = Promise.resolve(true);
-    }
-
-    const [serverResult, googleResult] = await Promise.allSettled([
-      serverRequest,
-      googleRequest,
-    ]);
-    const serverOk = serverResult.status === "fulfilled" && serverResult.value;
-    const googleOk = googleResult.status === "fulfilled" && googleResult.value;
-    if (!serverOk) console.error("Ошибка отправки на сервер (amoCRM)", serverResult);
-    if (!googleOk) console.error("Ошибка отправки в Google Таблицу", googleResult);
-
-    // Если не сработал ни один канал, показываем сообщение и даём отправить ещё раз
-    if (!serverOk && !googleOk) {
-      setSubmitError(true);
-      setIsSubmitting(false);
-      return;
-    }
-
-    setSubmittedPhone(phone);
-    setShowInteraction(false);
-    setDone(true);
-    setTimeout(() => setModalOpen(true), 3000);
-  }, [answers, canSubmit, isSubmitting, name, phone, utm]);
-
-  const stepNumber = Math.min(stepIndex + 1, TOTAL_STEPS);
-  const progress = (stepNumber / TOTAL_STEPS) * 100;
-  const currentStep = STEPS[stepIndex];
-  const isFormStep = stepIndex === TOTAL_STEPS - 1;
-
-  return (
-    <main className="flex min-h-screen justify-center bg-background md:items-center md:p-6">
-      <div className="flex h-[100dvh] w-full flex-col overflow-hidden bg-card shadow-xl md:h-[820px] md:max-h-[92vh] md:w-[440px] md:rounded-3xl md:border md:border-border">
-        {/* Шапка */}
-        <header className="shrink-0 bg-card pt-[env(safe-area-inset-top)]">
-          <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3 px-4 py-3">
-            <ManagerAvatar size="lg" />
-            <div className="min-w-0">
-              <p className="truncate font-semibold text-card-foreground">Менеджер Степан</p>
-              <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                {!done && <span className="h-1.5 w-1.5 rounded-full bg-success" />}
-                {done ? "Готово!" : "Онлайн"}
-              </p>
-            </div>
-          </div>
-          <div className="border-t border-border px-4 pb-3 pt-2">
-            <p className="text-xs text-muted-foreground">
-              Шаг {stepNumber} из {TOTAL_STEPS}
-            </p>
-            <div className="mt-1.5 h-[3px] w-full overflow-hidden rounded-full bg-muted">
-              <div
-                className="h-full rounded-full bg-quiz-cta transition-all duration-700 ease-out"
-                style={{ width: `${Math.min(100, progress)}%` }}
-              />
-            </div>
-          </div>
-        </header>
-
-        {/* Тело чата */}
-        <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto bg-chat-surface px-4 py-4">
-          {chat.map((item) =>
-            item.from === "manager" ? (
-              <div key={item.id} className="animate-bubble-in flex items-end gap-2">
-                <ManagerAvatar />
-                <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-chat-bubble px-4 py-2.5 text-[15px] leading-snug text-chat-bubble-foreground shadow-sm">
-                  {item.text}
-                </div>
-              </div>
-            ) : (
-              <div key={item.id} className="animate-bubble-in flex justify-end">
-                <div className="max-w-[80%] rounded-2xl rounded-br-md bg-chat-user-bubble px-4 py-2.5 text-[15px] leading-snug text-chat-bubble-foreground shadow-sm">
-                  {item.text}
-                </div>
-              </div>
-            ),
-          )}
-
-          {typing && !done && <TypingBubble />}
-
-          {/* Финальный экран */}
-          {done && (
-            <div className="animate-bubble-in flex flex-col items-center gap-3 px-2 py-8 text-center">
-              <div className="animate-pop-in grid h-16 w-16 place-items-center rounded-full bg-success text-success-foreground">
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={3}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="h-8 w-8"
-                  aria-hidden="true"
-                >
-                  <path d="M20 6 9 17l-5-5" />
-                </svg>
-              </div>
-              <h2 className="text-xl font-bold text-foreground">Спасибо, заявка принята!</h2>
-              <p className="text-sm leading-relaxed text-muted-foreground">
-                Звонок поступит с маркировкой «{CALL_MARKING}». Наш менеджер свяжется с вами в
-                ближайшее время по этому номеру телефона
-              </p>
-              <p className="text-2xl font-bold text-primary">{submittedPhone}</p>
-            </div>
-          )}
-        </div>
-
-        {/* Варианты ответа */}
-        {showInteraction && !done && !isFormStep && currentStep && (
-          <div className="animate-bubble-in shrink-0 space-y-2 bg-card px-4 py-3">
-            {currentStep.options.map((option) => (
-              <button
-                key={option}
-                type="button"
-                onClick={() => handleOption(option)}
-                className="w-full min-h-11 rounded-xl border border-input bg-card px-4 py-3 text-left text-[15px] font-medium text-card-foreground shadow-sm transition-all hover:border-primary hover:bg-accent active:scale-[0.99]"
-              >
-                {option}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* Форма контактов */}
-        {showInteraction && !done && isFormStep && (
-          <div className="animate-bubble-in shrink-0 space-y-3 bg-card px-4 py-3">
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Имя"
-              aria-label="Ваше имя"
-              maxLength={60}
-              className="w-full min-h-11 rounded-xl border border-input bg-card px-4 py-2.5 text-[15px] outline-none transition-colors focus:border-primary"
-            />
-            <div className="flex min-h-11 items-center gap-2 rounded-xl border border-input bg-card px-3 transition-colors focus-within:border-primary">
-              <span className="shrink-0 text-lg" aria-hidden="true">
-                🇷🇺
-              </span>
-              <input
-                type="tel"
-                value={phone}
-                onChange={(e) => setPhone(formatPhone(e.target.value))}
-                onFocus={() => {
-                  if (!phone) setPhone("+7");
-                }}
-                placeholder="+7 (999) 000-00-00"
-                aria-label="Номер телефона"
-                className="min-w-0 flex-1 bg-transparent py-2.5 text-[15px] outline-none"
-              />
-            </div>
-            <label className="flex cursor-pointer gap-2.5 text-xs leading-relaxed text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={agreed}
-                onChange={(e) => setAgreed(e.target.checked)}
-                className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
-              />
-              <span>
-                Я согласен с Политикой конфиденциальности и Согласием на обработку персональных
-                данных
-              </span>
-            </label>
-            {submitError && (
-              <p
-                role="alert"
-                className="rounded-xl bg-red-50 px-3 py-2 text-sm leading-snug text-red-600"
-              >
-                Не удалось отправить заявку. Проверьте интернет и нажмите кнопку ещё раз.
-              </p>
-            )}
-            <button
-              type="button"
-              onClick={handleSubmit}
-              disabled={!canSubmit || isSubmitting}
-              className="w-full min-h-12 rounded-xl bg-quiz-cta px-4 text-[15px] font-semibold text-foreground transition-all hover:opacity-90 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {isSubmitting ? (
-                <span className="inline-flex items-center justify-center gap-2">
-                  <span
-                    className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent"
-                    aria-hidden="true"
-                  />
-                  Отправляем…
-                </span>
-              ) : (
-                "Получить расчёт со скидкой →"
-              )}
-            </button>
-          </div>
-        )}
-
-        {/* Футер-дисклеймер */}
-        <footer className="shrink-0 overflow-hidden border-t border-border bg-card px-2 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] text-center text-[10px] leading-relaxed text-muted-foreground md:px-4 md:text-[11px]">
-          <span className="inline-flex flex-col items-center gap-0.5 text-[10px] md:flex-row md:flex-nowrap md:gap-1.5 md:whitespace-nowrap md:tracking-normal">
-            <span>Политика конфиденциальности</span>
-            <span aria-hidden="true" className="hidden text-border md:inline">
-              |
-            </span>
-            <span>Согласие на обработку персональных данных</span>
-          </span>
-        </footer>
-      </div>
-
-      {/* Модальное окно */}
-      {modalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/50 px-4">
-          <div className="animate-bubble-in w-full max-w-[340px] rounded-2xl bg-card p-6 text-center shadow-xl">
-            <div className="animate-pop-in mx-auto grid h-14 w-14 place-items-center rounded-full bg-success text-success-foreground">
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={3}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="h-7 w-7"
-                aria-hidden="true"
-              >
-                <path d="M20 6 9 17l-5-5" />
-              </svg>
-            </div>
-            <h3 className="mt-4 text-lg font-bold text-card-foreground">Спасибо!</h3>
-            <p className="mt-1 text-sm text-muted-foreground">Данные успешно отправлены.</p>
-            <button
-              type="button"
-              onClick={() => setModalOpen(false)}
-              className="mt-5 w-full min-h-11 rounded-xl bg-foreground text-[15px] font-semibold text-background transition-opacity hover:opacity-90"
-            >
-              Хорошо
-            </button>
-          </div>
-        </div>
-      )}
-    </main>
-  );
-}
+          return json({ ok: true });
+        } catch (error) {
+          console.error("[quiz] не удалось обратиться к amoCRM", error);
+          return json({ ok: false, error: "amo_unreachable" }, 502);
+        }
+      },
+    },
+  },
+});
