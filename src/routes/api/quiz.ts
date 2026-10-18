@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { markDelivery, saveLead } from "../../lib/lead-store";
 
 /* =============================================================================
  * Обработчик /api/quiz: принимает заявку из квиза и создаёт в amoCRM
@@ -61,10 +62,6 @@ export const Route = createFileRoute("/api/quiz")({
     handlers: {
       POST: async ({ request }) => {
         const token = process.env["AMO_TOKEN"];
-        if (!token) {
-          console.error("[quiz] AMO_TOKEN не задан в окружении сервера");
-          return json({ ok: false, error: "server_not_configured" }, 500);
-        }
 
         // Защита от слишком больших запросов
         const length = Number(request.headers.get("content-length") || 0);
@@ -83,6 +80,18 @@ export const Route = createFileRoute("/api/quiz")({
           return json({ ok: false, error: "name_or_phone_missing" }, 400);
         }
         const phone = normalizePhone(phoneRaw);
+
+        // 1) Сначала сохраняем заявку у себя на сервере (резервная копия).
+        //    Если запись не удалась, заявка всё равно пойдёт дальше в amoCRM.
+        const leadId = await saveLead(data, {
+          ip: request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "",
+        });
+
+        if (!token) {
+          console.error("[quiz] AMO_TOKEN не задан в окружении сервера");
+          await markDelivery(leadId, "amo", false, "AMO_TOKEN не задан");
+          return json({ ok: false, error: "server_not_configured" }, 500);
+        }
 
         const parsedDate = Date.parse(str(data["timestamp"], 50));
         const unixTime = Math.floor(
@@ -144,12 +153,15 @@ export const Route = createFileRoute("/api/quiz")({
             // В лог пишем статус и ответ amoCRM, токен не выводим
             const text = await res.text();
             console.error("[quiz] amoCRM ответил ошибкой", res.status, text.slice(0, 1000));
+            await markDelivery(leadId, "amo", false, `HTTP ${res.status}: ${text}`);
             return json({ ok: false, error: "amo_error", status: res.status }, 502);
           }
 
+          await markDelivery(leadId, "amo", true);
           return json({ ok: true });
         } catch (error) {
           console.error("[quiz] не удалось обратиться к amoCRM", error);
+          await markDelivery(leadId, "amo", false, String(error));
           return json({ ok: false, error: "amo_unreachable" }, 502);
         }
       },
