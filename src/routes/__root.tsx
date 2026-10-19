@@ -13,6 +13,9 @@ import { useEffect, type ReactNode } from "react";
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 
+// Счётчик Яндекс Метрики
+const YM_ID = 113673841;
+
 function NotFoundComponent() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
@@ -100,6 +103,12 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       { rel: "icon", href: "/favicon.png", type: "image/png" },
     ],
+    scripts: [
+      {
+        type: "text/javascript",
+        children: `(function(m,e,t,r,i,k,a){m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};m[i].l=1*new Date();for(var j=0;j<document.scripts.length;j++){if(document.scripts[j].src===r){return;}}k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)})(window,document,"script","https://mc.yandex.ru/metrika/tag.js?id=${YM_ID}","ym");ym(${YM_ID},"init",{ssr:true,webvisor:true,clickmap:true,ecommerce:"dataLayer",accurateTrackBounce:true,trackLinks:true,defer:true});`,
+      },
+    ],
   }),
 
   shellComponent: RootShell,
@@ -115,6 +124,15 @@ function RootShell({ children }: { children: ReactNode }) {
         <HeadContent />
       </head>
       <body>
+        <noscript>
+          <div>
+            <img
+              src={`https://mc.yandex.ru/watch/${YM_ID}`}
+              style={{ position: "absolute", left: "-9999px" }}
+              alt=""
+            />
+          </div>
+        </noscript>
         {children}
         <Scripts />
       </body>
@@ -124,6 +142,24 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+  const router = useRouter();
+
+  // Учёт просмотров при SPA-переходах (первый просмотр фиксирует init с defer:true)
+  useEffect(() => {
+    let isFirst = true;
+    return router.subscribe("onResolved", ({ toLocation }) => {
+      if (isFirst) {
+        isFirst = false;
+        const w = window as unknown as { ym?: (...a: unknown[]) => void };
+        w.ym?.(YM_ID, "hit", window.location.href, { title: document.title });
+        return;
+      }
+      const w = window as unknown as { ym?: (...a: unknown[]) => void };
+      w.ym?.(YM_ID, "hit", window.location.origin + toLocation.href, {
+        title: document.title,
+      });
+    });
+  }, [router]);
 
   return (
     <QueryClientProvider client={queryClient}>
