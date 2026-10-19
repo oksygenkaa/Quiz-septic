@@ -1,4 +1,0 @@
-{"type":"lead","id":"9953c64f-7aef-4193-8c3a-1ce371df3242","received_at":"2026-10-18T19:16:22.823Z","ip":"","payload":{"name":"Тест","phone":"+79990000000"}}
-{"type":"delivery","id":"9953c64f-7aef-4193-8c3a-1ce371df3242","channel":"amo","ok":false,"detail":"AMO_TOKEN не задан","at":"2026-10-18T19:16:22.826Z"}
-{"type":"lead","id":"e1ee86a8-fbfc-4123-bdf6-e26abdc24ab8","received_at":"2026-10-18T19:16:22.836Z","ip":"","payload":{"name":"Тест","phone":"+79990000000"}}
-{"type":"delivery","id":"e1ee86a8-fbfc-4123-bdf6-e26abdc24ab8","channel":"amo","ok":false,"detail":"AMO_TOKEN не задан","at":"2026-10-18T19:16:22.837Z"}
