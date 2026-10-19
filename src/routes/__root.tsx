@@ -146,19 +146,15 @@ function RootComponent() {
 
   // Учёт просмотров при SPA-переходах (первый просмотр фиксирует init с defer:true)
   useEffect(() => {
-    let isFirst = true;
-    return router.subscribe("onResolved", ({ toLocation }) => {
-      if (isFirst) {
-        isFirst = false;
-        const w = window as unknown as { ym?: (...a: unknown[]) => void };
-        w.ym?.(YM_ID, "hit", window.location.href, { title: document.title });
-        return;
-      }
+    const send = (url: string) => {
+      if (url === lastUrl) return;
+      lastUrl = url;
       const w = window as unknown as { ym?: (...a: unknown[]) => void };
-      w.ym?.(YM_ID, "hit", window.location.origin + toLocation.href, {
-        title: document.title,
-      });
-    });
+      w.ym?.(YM_ID, "hit", url, { title: document.title });
+    };
+    let lastUrl = "";
+    send(window.location.href);
+    return router.subscribe("onResolved", () => send(window.location.href));
   }, [router]);
 
   return (
