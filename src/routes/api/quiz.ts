@@ -8,6 +8,11 @@ import { markDelivery, saveLead } from "../../lib/lead-store";
  *
  * Токен берётся из переменной окружения AMO_TOKEN (файл .env на сервере),
  * в коде и в репозитории его быть не должно.
+ *
+ * Ответ всегда JSON вида { ok, saved, amo }:
+ *   saved — заявка записана в резервное хранилище на сервере;
+ *   amo   — результат обращения к amoCRM: "ok" | "failed" | "not_configured".
+ * HTTP 200, если заявка сохранена ИЛИ amoCRM её принял.
  * ========================================================================== */
 
 const AMO_SUBDOMAIN = process.env["AMO_SUBDOMAIN"] || "amelinameliorama";
@@ -30,6 +35,7 @@ const FIELD = {
 } as const;
 
 type Payload = Record<string, unknown>;
+type AmoResult = "ok" | "failed" | "not_configured";
 
 const str = (v: unknown, max = 500): string =>
   typeof v === "string" ? v.trim().slice(0, max) : "";
@@ -86,84 +92,93 @@ export const Route = createFileRoute("/api/quiz")({
         const leadId = await saveLead(data, {
           ip: request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "",
         });
+        const saved = leadId !== null;
+
+        // 2) Отправка в amoCRM. Её результат не должен выглядеть как потеря
+        //    заявки, если заявка уже сохранена на сервере.
+        let amo: AmoResult = "not_configured";
 
         if (!token) {
           console.error("[quiz] AMO_TOKEN не задан в окружении сервера");
           await markDelivery(leadId, "amo", false, "AMO_TOKEN не задан");
-          return json({ ok: false, error: "server_not_configured" }, 500);
-        }
-
-        const parsedDate = Date.parse(str(data["timestamp"], 50));
-        const unixTime = Math.floor(
-          (Number.isNaN(parsedDate) ? Date.now() : parsedDate) / 1000,
-        );
-
-        const customFields = [
-          { field_id: FIELD.date, values: [{ value: unixTime }] } as CustomField,
-          textField(FIELD.people, str(data["answer_1"])),
-          textField(FIELD.living, str(data["answer_2"])),
-          textField(FIELD.groundwater, str(data["answer_3"])),
-          textField(FIELD.contact, str(data["answer_4"])),
-          textField(FIELD.utm_source, str(data["utm_source"])),
-          textField(FIELD.utm_medium, str(data["utm_medium"])),
-          textField(FIELD.utm_campaign, str(data["utm_campaign"])),
-          textField(FIELD.utm_content, str(data["utm_content"])),
-          textField(FIELD.utm_term, str(data["utm_term"])),
-          textField(FIELD.page_url, str(data["page_url"], 1000), 1000),
-        ].filter((f): f is CustomField => f !== null);
-
-        // Один запрос создаёт и сделку, и контакт, и связывает их
-        const body = [
-          {
-            name: `Заявка с квиза: ${name}`,
-            pipeline_id: PIPELINE_ID,
-            status_id: STATUS_ID,
-            custom_fields_values: customFields,
-            _embedded: {
-              contacts: [
-                {
-                  name,
-                  custom_fields_values: [
-                    {
-                      field_code: "PHONE",
-                      values: [{ value: phone, enum_code: "WORK" }],
-                    },
-                  ],
-                },
-              ],
-            },
-          },
-        ];
-
-        try {
-          const res = await fetch(
-            `https://${AMO_SUBDOMAIN}.amocrm.ru/api/v4/leads/complex`,
-            {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${token}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify(body),
-              signal: AbortSignal.timeout(10_000),
-            },
+        } else {
+          const parsedDate = Date.parse(str(data["timestamp"], 50));
+          const unixTime = Math.floor(
+            (Number.isNaN(parsedDate) ? Date.now() : parsedDate) / 1000,
           );
 
-          if (!res.ok) {
-            // В лог пишем статус и ответ amoCRM, токен не выводим
-            const text = await res.text();
-            console.error("[quiz] amoCRM ответил ошибкой", res.status, text.slice(0, 1000));
-            await markDelivery(leadId, "amo", false, `HTTP ${res.status}: ${text}`);
-            return json({ ok: false, error: "amo_error", status: res.status }, 502);
-          }
+          const customFields = [
+            { field_id: FIELD.date, values: [{ value: unixTime }] } as CustomField,
+            textField(FIELD.people, str(data["answer_1"])),
+            textField(FIELD.living, str(data["answer_2"])),
+            textField(FIELD.groundwater, str(data["answer_3"])),
+            textField(FIELD.contact, str(data["answer_4"])),
+            textField(FIELD.utm_source, str(data["utm_source"])),
+            textField(FIELD.utm_medium, str(data["utm_medium"])),
+            textField(FIELD.utm_campaign, str(data["utm_campaign"])),
+            textField(FIELD.utm_content, str(data["utm_content"])),
+            textField(FIELD.utm_term, str(data["utm_term"])),
+            textField(FIELD.page_url, str(data["page_url"], 1000), 1000),
+          ].filter((f): f is CustomField => f !== null);
 
-          await markDelivery(leadId, "amo", true);
-          return json({ ok: true });
-        } catch (error) {
-          console.error("[quiz] не удалось обратиться к amoCRM", error);
-          await markDelivery(leadId, "amo", false, String(error));
-          return json({ ok: false, error: "amo_unreachable" }, 502);
+          // Один запрос создаёт и сделку, и контакт, и связывает их
+          const body = [
+            {
+              name: `Заявка с квиза: ${name}`,
+              pipeline_id: PIPELINE_ID,
+              status_id: STATUS_ID,
+              custom_fields_values: customFields,
+              _embedded: {
+                contacts: [
+                  {
+                    name,
+                    custom_fields_values: [
+                      {
+                        field_code: "PHONE",
+                        values: [{ value: phone, enum_code: "WORK" }],
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          ];
+
+          try {
+            const res = await fetch(
+              `https://${AMO_SUBDOMAIN}.amocrm.ru/api/v4/leads/complex`,
+              {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify(body),
+                signal: AbortSignal.timeout(10_000),
+              },
+            );
+
+            if (!res.ok) {
+              // В лог пишем статус и ответ amoCRM, токен не выводим
+              const text = await res.text();
+              console.error("[quiz] amoCRM ответил ошибкой", res.status, text.slice(0, 1000));
+              await markDelivery(leadId, "amo", false, `HTTP ${res.status}: ${text}`);
+              amo = "failed";
+            } else {
+              await markDelivery(leadId, "amo", true);
+              amo = "ok";
+            }
+          } catch (error) {
+            console.error("[quiz] не удалось обратиться к amoCRM", error);
+            await markDelivery(leadId, "amo", false, String(error));
+            amo = "failed";
+          }
         }
+
+        // 3) Ответ: 200, если заявка сохранена ИЛИ amoCRM её принял.
+        //    Ошибка только тогда, когда не случилось ни того, ни другого.
+        if (saved || amo === "ok") return json({ ok: true, saved, amo }, 200);
+        return json({ ok: false, saved, amo }, amo === "failed" ? 502 : 500);
       },
     },
   },

@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { GOALS, reachGoal, type Goal } from "../lib/metrika";
 
 /* =============================================================================
  * Квиз-лендинг «Свежий ветер» — имитация переписки в мессенджере.
@@ -186,6 +187,15 @@ function QuizPage() {
 
   const idRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Уже отправленные цели Метрики: защита от дублей при повторных рендерах,
+  // двойном вызове эффектов и повторных вызовах обработчиков.
+  const sentGoals = useRef<Set<Goal>>(new Set());
+
+  const markGoal = useCallback((goal: Goal) => {
+    if (sentGoals.current.has(goal)) return;
+    // Отмечаем цель как отправленную только после фактического вызова счётчика.
+    if (reachGoal(goal)) sentGoals.current.add(goal);
+  }, []);
 
   useEffect(() => {
     const stored = sessionStorage.getItem("quiz_utm");
@@ -259,6 +269,10 @@ function QuizPage() {
   }, [chat, typing, showInteraction, done]);
 
   const handleOption = (option: string) => {
+    // Первый ответ на первый вопрос — «квиз начат». Ответ на последний вопрос —
+    // «квиз пройден»: сразу после него открывается форма имени и телефона.
+    if (stepIndex === 0) markGoal(GOALS.quizStarted);
+    if (stepIndex === TOTAL_STEPS - 2) markGoal(GOALS.quizCompleted);
     idRef.current += 1;
     setChat((prev) => [...prev, { id: idRef.current, from: "user", text: option }]);
     setAnswers((prev) => [...prev, option]);
@@ -293,7 +307,19 @@ function QuizPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-    }).then((res) => res.ok);
+    }).then(async (res) => {
+      // serverReceived — сервер ответил (HTTP 2xx). savedOnServer — сервер
+      // подтвердил, что заявка сохранена (saved === true в JSON-ответе).
+      const serverReceived = res.ok;
+      let saved = false;
+      try {
+        const body = (await res.json()) as { saved?: unknown };
+        saved = body.saved === true;
+      } catch {
+        saved = false; // тело ответа не разобралось — считаем, что не сохранена
+      }
+      return { serverReceived, savedOnServer: serverReceived && saved };
+    });
 
     let googleRequest: Promise<boolean>;
     if (GOOGLE_SCRIPT_URL.startsWith("http")) {
@@ -312,7 +338,10 @@ function QuizPage() {
       serverRequest,
       googleRequest,
     ]);
-    const serverOk = serverResult.status === "fulfilled" && serverResult.value;
+    const serverOk =
+      serverResult.status === "fulfilled" && serverResult.value.serverReceived;
+    const savedOnServer =
+      serverResult.status === "fulfilled" && serverResult.value.savedOnServer;
     const googleOk = googleResult.status === "fulfilled" && googleResult.value;
     if (!serverOk) console.error("Ошибка отправки на сервер (amoCRM)", serverResult);
     if (!googleOk) console.error("Ошибка отправки в Google Таблицу", googleResult);
@@ -327,8 +356,11 @@ function QuizPage() {
     setSubmittedPhone(phone);
     setShowInteraction(false);
     setDone(true);
+    // Цель «заявка отправлена» — только когда сервер подтвердил сохранение
+    // заявки: не нажатие кнопки, не экран «Спасибо» и не ответ Google Таблицы.
+    if (savedOnServer) markGoal(GOALS.leadSent);
     setTimeout(() => setModalOpen(true), 3000);
-  }, [answers, canSubmit, isSubmitting, name, phone, utm]);
+  }, [answers, canSubmit, isSubmitting, markGoal, name, phone, utm]);
 
   const stepNumber = Math.min(stepIndex + 1, TOTAL_STEPS);
   const progress = (stepNumber / TOTAL_STEPS) * 100;
