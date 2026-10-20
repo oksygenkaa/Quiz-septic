@@ -1,10 +1,14 @@
-// Выгрузка заявок из leads.jsonl в CSV (открывается в Excel / Google Таблицах).
-// Запуск:  node scripts/export-leads.mjs [путь_к_leads.jsonl] > leads.csv
+// Заявки из leads.jsonl: просмотр в консоли или выгрузка в CSV.
+//   node scripts/export-leads.mjs --view              последние 10 заявок на экране
+//   node scripts/export-leads.mjs > leads.csv         все заявки в CSV (Excel / Google Таблицы)
+// Путь к файлу можно указать первым параметром без "--", по умолчанию берётся LEADS_DIR.
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
+const args = process.argv.slice(2);
+const view = args.includes("--view");
 const file =
-  process.argv[2] ||
+  args.find((a) => !a.startsWith("--")) ||
   path.join(process.env.LEADS_DIR || path.resolve("data"), "leads.jsonl");
 
 const leads = new Map();
@@ -14,8 +18,25 @@ for (const line of readFileSync(file, "utf8").split("\n")) {
   try { r = JSON.parse(line); } catch { continue; }
   if (r.type === "lead") leads.set(r.id, { ...r, delivery: {} });
   else if (r.type === "delivery" && leads.has(r.id)) {
-    leads.get(r.id).delivery[r.channel] = r.ok ? "ok" : "ошибка";
+    leads.get(r.id).delivery[r.channel] = r.ok ? "ok" : "ОШИБКА";
   }
+}
+
+if (view) {
+  const all = [...leads.values()];
+  const last = all.slice(-10);
+  const fmt = (iso) =>
+    new Date(iso).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
+  console.log(`Всего заявок: ${all.length}. Показаны последние ${last.length}.\n`);
+  last.forEach((l, i) => {
+    const p = l.payload;
+    console.log(`${all.length - last.length + i + 1}. ${fmt(p.timestamp || l.received_at)} (МСК)`);
+    console.log(`   ${p.name || "-"}, ${p.phone || "-"}`);
+    console.log(`   Человек: ${p.answer_1 || "-"} | Проживание: ${p.answer_2 || "-"}`);
+    console.log(`   Грунтовые воды: ${p.answer_3 || "-"} | Связь: ${p.answer_4 || "-"}`);
+    console.log(`   amoCRM: ${l.delivery.amo || "не отправлено"}\n`);
+  });
+  process.exit(0);
 }
 
 const cols = [
