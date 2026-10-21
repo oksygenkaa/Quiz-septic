@@ -10,11 +10,23 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ConsentRouteImport } from './routes/consent'
+import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as ApiQuizRouteImport } from './routes/api/quiz'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConsentRoute = ConsentRouteImport.update({
+  id: '/consent',
+  path: '/consent',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PrivacyRoute = PrivacyRouteImport.update({
+  id: '/privacy',
+  path: '/privacy',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiQuizRoute = ApiQuizRouteImport.update({
@@ -25,27 +37,35 @@ const ApiQuizRoute = ApiQuizRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/consent': typeof ConsentRoute
+  '/privacy': typeof PrivacyRoute
   '/api/quiz': typeof ApiQuizRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/consent': typeof ConsentRoute
+  '/privacy': typeof PrivacyRoute
   '/api/quiz': typeof ApiQuizRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/consent': typeof ConsentRoute
+  '/privacy': typeof PrivacyRoute
   '/api/quiz': typeof ApiQuizRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/quiz'
+  fullPaths: '/' | '/consent' | '/privacy' | '/api/quiz'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/quiz'
-  id: '__root__' | '/' | '/api/quiz'
+  to: '/' | '/consent' | '/privacy' | '/api/quiz'
+  id: '__root__' | '/' | '/consent' | '/privacy' | '/api/quiz'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ConsentRoute: typeof ConsentRoute
+  PrivacyRoute: typeof PrivacyRoute
   ApiQuizRoute: typeof ApiQuizRoute
 }
 
@@ -56,6 +76,20 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/consent': {
+      id: '/consent'
+      path: '/consent'
+      fullPath: '/consent'
+      preLoaderRoute: typeof ConsentRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/privacy': {
+      id: '/privacy'
+      path: '/privacy'
+      fullPath: '/privacy'
+      preLoaderRoute: typeof PrivacyRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/quiz': {
@@ -70,6 +104,8 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ConsentRoute: ConsentRoute,
+  PrivacyRoute: PrivacyRoute,
   ApiQuizRoute: ApiQuizRoute,
 }
 export const routeTree = rootRouteImport

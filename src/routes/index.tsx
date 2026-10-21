@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GOALS, reachGoal, type Goal } from "../lib/metrika";
 
@@ -531,11 +531,21 @@ function QuizPage() {
         {/* Футер-дисклеймер */}
         <footer className="shrink-0 overflow-hidden border-t border-border bg-card px-2 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] text-center text-[10px] leading-relaxed text-muted-foreground md:px-4 md:text-[11px]">
           <span className="inline-flex flex-col items-center gap-0.5 text-[10px] md:flex-row md:flex-nowrap md:gap-1.5 md:whitespace-nowrap md:tracking-normal">
-            <span>Политика конфиденциальности</span>
+            <Link
+              to="/privacy"
+              className="underline-offset-2 transition-colors hover:text-primary hover:underline"
+            >
+              Политика конфиденциальности
+            </Link>
             <span aria-hidden="true" className="hidden text-border md:inline">
               |
             </span>
-            <span>Согласие на обработку персональных данных</span>
+            <Link
+              to="/consent"
+              className="underline-offset-2 transition-colors hover:text-primary hover:underline"
+            >
+              Согласие на обработку персональных данных
+            </Link>
           </span>
         </footer>
       </div>
