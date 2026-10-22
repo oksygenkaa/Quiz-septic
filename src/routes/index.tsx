@@ -396,7 +396,7 @@ function QuizPage() {
         </header>
 
         {/* Тело чата */}
-        <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto bg-chat-surface px-4 py-4">
+        <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto overscroll-contain bg-chat-surface px-4 py-4">
           {chat.map((item) =>
             item.from === "manager" ? (
               <div key={item.id} className="animate-bubble-in flex items-end gap-2">
