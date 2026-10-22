@@ -368,8 +368,8 @@ function QuizPage() {
   const isFormStep = stepIndex === TOTAL_STEPS - 1;
 
   return (
-    <main className="flex min-h-screen justify-center bg-background md:items-center md:p-6">
-      <div className="flex h-[100dvh] w-full flex-col overflow-hidden bg-card shadow-xl md:h-[820px] md:max-h-[92vh] md:w-[440px] md:rounded-3xl md:border md:border-border">
+    <main className="fixed inset-0 flex justify-center overflow-hidden overscroll-none bg-chat-surface md:static md:min-h-screen md:items-center md:bg-background md:p-6">
+      <div className="flex h-[100dvh] w-full flex-col overflow-hidden bg-card md:h-[820px] md:max-h-[92vh] md:w-[440px] md:rounded-3xl md:border md:border-border md:shadow-xl">
         {/* Шапка */}
         <header className="shrink-0 bg-card pt-[env(safe-area-inset-top)]">
           <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3 px-4 py-3">
